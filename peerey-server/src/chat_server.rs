@@ -1,4 +1,7 @@
-use std::time::Instant;
+use std::{
+    io::Error as IoError,
+    time::{Duration, Instant},
+};
 
 use crate::{
     codec::{ChatMessage, Codec},
@@ -6,7 +9,7 @@ use crate::{
 };
 
 use actix::{
-    io::FramedWrite, Actor, ActorContext, Addr, AsyncContext, Context, Handler, Message,
+    io::FramedWrite, Actor, ActorContext, Addr, AsyncContext, Context, Handler, Message, Running,
     StreamHandler,
 };
 
@@ -75,42 +78,52 @@ impl ChatSession {
         addr: Addr<ChatServer>,
         framed: FramedWrite<ChatMessage, WriteHalf<TcpStream>, Codec>,
     ) -> Self {
-        let last_recieved = Instant::now();
-        Self { addr, framed, last_recieved }
+        // Set 6 seconds in the past so a user can immediately mesage
+        let last_recieved = Instant::now() - Duration::from_secs(6);
+        Self {
+            addr,
+            framed,
+            last_recieved,
+        }
     }
 }
 
 impl Actor for ChatSession {
     type Context = Context<Self>;
 
-    fn stopping(&mut self, ctx: &mut Self::Context) -> actix::Running {
+    fn stopping(&mut self, ctx: &mut Self::Context) -> Running {
         self.addr.do_send(Disconnect(ctx.address()));
-        actix::Running::Stop
+        Running::Stop
     }
 }
 
 impl Handler<ChatMessage> for ChatSession {
-    type Result = <ChatMessage as Message>::Result;
+    type Result = ();
 
-    fn handle(&mut self, msg: ChatMessage, _: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: ChatMessage, _: &mut Self::Context) {
         self.framed.write(msg);
     }
 }
 
-impl actix::io::WriteHandler<std::io::Error> for ChatSession {}
+impl actix::io::WriteHandler<IoError> for ChatSession {
+    fn error(&mut self, e: IoError, _: &mut Self::Context) -> Running {
+        println!("ERROR {}", e);
+        Running::Stop
+    }
+}
 
-impl StreamHandler<Result<ChatMessage, std::io::Error>> for ChatSession {
-    fn handle(&mut self, msg: Result<ChatMessage, std::io::Error>, ctx: &mut Self::Context) {
+impl StreamHandler<Result<ChatMessage, IoError>> for ChatSession {
+    fn handle(&mut self, msg: Result<ChatMessage, IoError>, ctx: &mut Self::Context) {
         match msg {
             Ok(msg) => {
                 let instant = Instant::now();
                 if msg.0.len() <= MAX_MESSAGE_SIZE && (instant - self.last_recieved).as_secs() > 5 {
                     self.last_recieved = instant;
-                    self.addr.do_send(msg)
+                    self.addr.do_send(msg);
                 }
             }
             Err(e) => {
-                eprintln!("ERROR: {}", e);
+                eprintln!("ERROR {}", e);
                 ctx.stop();
             }
         }

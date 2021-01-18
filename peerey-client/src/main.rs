@@ -90,9 +90,7 @@ fn main() {
 
     let sink = launcher.get_external_handle();
 
-    let stream = runtime
-        .block_on(TcpStream::connect(IP))
-        .unwrap();
+    let stream = runtime.block_on(TcpStream::connect(IP)).unwrap();
 
     let (r, w) = tokio::io::split(stream);
 

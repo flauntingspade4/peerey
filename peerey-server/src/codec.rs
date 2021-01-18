@@ -1,14 +1,13 @@
 use actix::Message;
-use bytes::{BufMut, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
 
-#[derive(Debug, Clone)]
-pub struct ChatMessage(pub BytesMut);
+#[derive(Clone)]
+pub struct ChatMessage(pub Bytes);
 
 impl Message for ChatMessage {
     type Result = ();
 }
-
 pub struct Codec;
 
 impl Encoder<ChatMessage> for Codec {
@@ -30,7 +29,7 @@ impl Decoder for Codec {
         } else {
             let len = src.len();
             let msg = src.split_to(len);
-            Ok(Some(ChatMessage(msg)))
+            Ok(Some(ChatMessage(msg.freeze())))
         }
     }
 }
