@@ -1,20 +1,20 @@
 #![warn(clippy::pedantic, clippy::nursery)]
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
 mod chat_server;
 mod codec;
+
 use chat_server::{ChatServer, ChatSession, Joined};
 use codec::Codec;
 
 use actix::{io::FramedWrite, Actor, Addr, AsyncContext, Context, Handler, Message, System};
 use actix_rt::net::{TcpListener, TcpStream};
 use tokio::stream::StreamExt;
+//use tokio::stream::StreamExt;
 use tokio_util::codec::FramedRead;
 
 static PORTS: &[u16] = &[45623];
 
-const MAX_MESSAGE_SIZE: usize = 512;
+const MAX_MESSAGE_SIZE: usize = include!("../../MAX_MESSAGE_SIZE");
 
 #[derive(Message)]
 #[rtype(result = "()")]
@@ -45,7 +45,7 @@ impl Handler<Incoming> for Server {
 async fn main() -> std::io::Result<()> {
     let mut listener = None;
     for port in PORTS.iter() {
-        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), *port);
+        let addr = (std::net::Ipv4Addr::from([0, 0, 0, 0]), *port);
         match TcpListener::bind(&addr).await {
             Ok(t) => {
                 eprintln!("INFO Began running successfully on port {}", port);

@@ -60,7 +60,7 @@ impl Handler<ChatMessage> for ChatServer {
     type Result = ();
 
     fn handle(&mut self, msg: ChatMessage, _: &mut Self::Context) -> Self::Result {
-        for id in self.sessions.iter() {
+        for id in &self.sessions {
             id.do_send(msg.clone());
         }
     }
@@ -107,7 +107,7 @@ impl Handler<ChatMessage> for ChatSession {
 
 impl actix::io::WriteHandler<IoError> for ChatSession {
     fn error(&mut self, e: IoError, _: &mut Self::Context) -> Running {
-        println!("ERROR {}", e);
+        eprintln!("ERROR {}", e);
         Running::Stop
     }
 }

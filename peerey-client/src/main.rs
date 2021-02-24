@@ -1,53 +1,79 @@
 #![warn(clippy::pedantic, clippy::nursery)]
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 mod message;
-use message::{ReceiveMessage, SendMessage};
+
+use message::PeereyMessage;
 
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
+    io::{AsyncReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf},
     net::TcpStream,
     runtime::Runtime,
 };
 
 use druid::{
-    widget::{Button, Flex, Label, Scroll, TextBox},
+    widget::{Align, Button, Flex, Label, LineBreaking, Scroll, TextBox},
     AppDelegate, AppLauncher, Command, Data, DelegateCtx, Env, Handled, Lens, Selector, SingleUse,
     Target, Widget, WidgetExt, WindowDesc,
 };
 
 use crossbeam::sync::ShardedLock;
 
-//const VERTICAL_WIDGET_SPACING: f64 = 20.0;
 const TEXT_BOX_WIDTH: f64 = 400.;
 const WINDOW_TITLE: &str = "peerey - client";
 
-const RECIEVE_MESSAGE: Selector<SingleUse<ReceiveMessage>> = Selector::new("recieved_message");
+const RECIEVE_MESSAGE: Selector<SingleUse<PeereyMessage>> = Selector::new("recieved_message");
 
 const IP: &str = include_str!("../.IP");
+const MAX_MESSAGE_SIZE: usize = include!("../../MAX_MESSAGE_SIZE");
 
 #[derive(Clone, Data, Lens)]
 struct State {
     name: String,
     messages: String,
     current_message: String,
+    last_sent: Arc<Instant>,
     stream: Arc<ShardedLock<WriteHalf<TcpStream>>>,
     runtime: Arc<ShardedLock<Runtime>>,
 }
 
 impl State {
     fn send(&mut self) {
-        let mut stream = self.stream.write().unwrap();
-        let runtime = self.runtime.read().unwrap();
+        if self.current_message.len() > MAX_MESSAGE_SIZE {
+            eprintln!(
+                "ERROR Message is too large, must be {} bytes at most",
+                MAX_MESSAGE_SIZE
+            );
+        } else if self.last_sent.elapsed().as_secs() < 5 {
+            eprintln!(
+                "ERROR Messages cannot be sent more than once every {} seconds",
+                5
+            );
+        } else {
+            let mut stream = self.stream.write().unwrap();
+            let mut runtime = self.runtime.write().unwrap();
 
-        let current_message = std::mem::replace(&mut self.current_message, String::new());
+            let mut current_message = std::mem::replace(&mut self.current_message, String::new());
 
-        let message = SendMessage::new(&self.name, current_message);
+            let mut message = Vec::with_capacity(current_message.len() + self.name.len() + 2);
 
-        runtime
-            .block_on(stream.write_all(&bincode::serialize(&message).unwrap()))
-            .unwrap();
+            message.extend(self.name.as_bytes());
+            message.push(0);
+
+            // Use .append() instead of .extend() so
+            // 'current_message' doesn't have to be cloned,
+            // instead just emptied
+            message.append(unsafe { current_message.as_mut_vec() });
+            message.push(0);
+
+            self.last_sent = Arc::new(Instant::now());
+
+            runtime.block_on(stream.write_all(&message)).unwrap();
+        }
     }
 }
 
@@ -73,7 +99,11 @@ impl AppDelegate<State> for Delegate {
 }
 
 fn main() {
-    let runtime = Runtime::new().unwrap();
+    let mut runtime = tokio::runtime::Builder::new()
+        .enable_io()
+        .threaded_scheduler()
+        .build()
+        .unwrap();
 
     let mut name = String::new();
     while let Err(e) = std::io::stdin().read_line(&mut name) {
@@ -100,6 +130,7 @@ fn main() {
         name,
         messages: String::new(),
         current_message: String::new(),
+        last_sent: Arc::new(Instant::now() - Duration::from_secs(6)),
         stream: Arc::new(ShardedLock::new(w)),
         runtime: Arc::new(ShardedLock::new(runtime)),
     };
@@ -115,7 +146,10 @@ fn build_root_widget() -> impl Widget<State> {
         .fix_width(TEXT_BOX_WIDTH)
         .lens(State::current_message);
 
-    let label = Label::new(|data: &State, _: &Env| data.messages.to_string());
+    let label = Label::new(|data: &State, _: &Env| data.messages.to_string())
+        .with_line_break_mode(LineBreaking::WordWrap);
+
+    let label = Align::left(label);
 
     let scroll = Scroll::new(label).vertical();
 
@@ -131,25 +165,27 @@ fn build_root_widget() -> impl Widget<State> {
     Scroll::new(layout).vertical()
 }
 
-async fn read_stream(sink: druid::ExtEventSink, mut r: ReadHalf<TcpStream>) {
-    let mut buf = Vec::new();
+async fn read_stream(sink: druid::ExtEventSink, r: ReadHalf<TcpStream>) {
+    let initial_len = 25;
+    let mut r = BufReader::new(r);
+    let mut buf: Vec<u8> = vec![0; initial_len];
+
     loop {
-        r.read_buf(&mut buf).await.unwrap();
+        let mut src = [String::new(), String::new()];
+        for i in 0..=1usize {
+            //r.read_until(0, &mut buf).await.unwrap();
 
-        let new_buf = std::mem::replace(&mut buf, Vec::new());
+            let read = r.read_to_end(&mut buf).await.unwrap();
 
-        match bincode::deserialize(&new_buf) {
-            Ok(data) => {
-                if let Err(e) =
-                    sink.submit_command(RECIEVE_MESSAGE, SingleUse::new(data), Target::Auto)
-                {
-                    println!("{}", e);
-                    break;
-                }
-            }
-            Err(e) => {
-                println!("{} while parsing {:?}", e, new_buf)
-            }
+            println!("Read {} bytes", read);
+
+            src[i] = String::from_utf8(std::mem::replace(&mut buf, vec![0; initial_len])).unwrap();
+        }
+        let data = PeereyMessage::from(src);
+
+        if let Err(e) = sink.submit_command(RECIEVE_MESSAGE, SingleUse::new(data), Target::Auto) {
+            eprintln!("ERROR {}", e);
+            break;
         }
     }
 }
